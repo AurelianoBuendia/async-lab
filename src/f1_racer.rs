@@ -1,9 +1,10 @@
 #![allow(dead_code)]
 
-use rand::prelude::*;
-use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use tokio::time::Duration;
+use rand::{RngExt};
+
 
 pub struct F1Racer {
     pub name: String,
@@ -11,12 +12,12 @@ pub struct F1Racer {
     pub number_of_laps: usize,
     pub best_lap_time: u8,
     pub lap_times: Vec<u8>,
-    pub race_state: RaceState,
+    pub race_state: Arc<Mutex<RaceState>>,
 }
 
 pub enum RaceState {
     Start,
-    Running(Pin<Box<dyn Future<Output = ()>>>),
+    Running(Pin<Box<dyn std::future::Future<Output=()> + Send>>),
     Finished,
 }
 
@@ -28,7 +29,7 @@ impl F1Racer {
             number_of_laps,
             best_lap_time: 255,
             lap_times: vec![255; number_of_laps],
-            race_state: RaceState::Start,
+            race_state: Arc::new(Mutex::new(RaceState::Start)),
         }
     }
 }
@@ -46,11 +47,15 @@ impl std::future::Future for F1Racer {
 
     fn poll(mut self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let seed = [42u8; 32];
+        let mut rng = rand::rng();
         loop {
-            match &mut self.race_state {
+            // Lock the mutex and get a mutable reference to the RaceState so we can borrow inner futures mutably.
+            let guard = self.race_state.clone();
+            let mut guard = guard.lock().unwrap();
+            match &mut *guard {
                 RaceState::Start => {
-                    let mut rng = rand::rng();
-                    let current_lap_time = rng.random_range(10..255);
+                    let current_lap_time = rng.random_range(20..255);
                     let completed_laps = self.completed_laps;
                     self.lap_times[completed_laps] = current_lap_time;
                     if current_lap_time < self.best_lap_time {
@@ -62,26 +67,27 @@ impl std::future::Future for F1Racer {
                              self.name);
                     self.completed_laps += 1;
                     if self.completed_laps > self.number_of_laps {
-                        self.race_state = RaceState::Finished;
+                        self.race_state = Arc::new(Mutex::new(RaceState::Finished));
                         cx.waker().wake_by_ref();
                         return std::task::Poll::Pending;
                     }
                     let inner_future = Box::pin(do_lap(current_lap_time as u64));
-                    self.race_state = RaceState::Running(inner_future);
+                    self.race_state = Arc::new(Mutex::new(RaceState::Running(inner_future)));
                     cx.waker().wake_by_ref();
                     return std::task::Poll::Pending;
                 }
                 RaceState::Running(inner_future) => {
-                    match inner_future.as_mut().poll(cx) {
+                    let inner_future: Pin<&mut (dyn std::future::Future<Output=()> + Send)> = inner_future.as_mut();
+                    match inner_future.poll(cx) {
                         std::task::Poll::Pending => {
                             cx.waker().wake_by_ref();
                             return std::task::Poll::Pending;
                         }
                         std::task::Poll::Ready(()) => {
                             if self.completed_laps >= self.number_of_laps {
-                                self.race_state = RaceState::Finished;
+                                self.race_state = Arc::new(Mutex::new(RaceState::Finished));
                             } else {
-                                self.race_state = RaceState::Start;
+                                self.race_state = Arc::new(Mutex::new(RaceState::Start));
                             }
                             cx.waker().wake_by_ref();
                             return std::task::Poll::Pending;
@@ -89,7 +95,9 @@ impl std::future::Future for F1Racer {
                     }
                 }
                 RaceState::Finished => {
-                    println!("Executed on thread with ID: {:?}.", std::thread::current().id());
+                    println!("RUN for {} executed on thread: {:?}.",
+                        self.name,
+                        std::thread::current().id());
                     return std::task::Poll::Ready(self.best_lap_time);
                 }
             }

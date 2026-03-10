@@ -4,6 +4,7 @@ mod f1_racer;
 
 use crate::f1_racer::F1Racer;
 
+
 #[tokio::main]
 async fn main() {
     println!("I am alive!");
@@ -18,16 +19,23 @@ async fn main() {
         "Kimi Antonelli",
     ];
     let mut racers: Vec<F1Racer> = Vec::new();
-    for pilot in pilots {
+    for pilot in &pilots {
         let racer = F1Racer::new(
-            String::from(pilot),
+            String::from(*pilot),
             number_of_laps,
         );
         racers.push(racer);
     }
+    let mut handles: Vec<tokio::task::JoinHandle<u8>> = Vec::new();
     for racer in racers {
-        let name = &racer.name.clone();
-        let best_time = racer.await;
-        println!("Best time lap of {} was {}.", name, best_time);
+        let handle = tokio::task::spawn(racer);
+        handles.push(handle);
+    };
+    let mut outputs: Vec<u8> = Vec::with_capacity(handles.len());
+    for handle in handles {
+        outputs.push(handle.await.unwrap());
+    }
+    for i in 0..pilots.len() {
+        println!("Best lap time for {} was {}.", pilots[i], outputs[i]);
     }
 }

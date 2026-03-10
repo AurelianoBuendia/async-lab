@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 rand = "0.10.0"
 tokio = { version = "1.50.0", features = ["full"] }
+chacha20 = "0.10.0"
